@@ -1,11 +1,12 @@
 //! Factory for creating load balancing policies
 
 use super::{
-    CacheAwareConfig, CacheAwarePolicy, ConsistentHashPolicy, LoadBalancingPolicy,
+    CacheAwareConfig, CacheAwarePolicy, ConsistentHashPolicy, ExternalPolicy, LoadBalancingPolicy,
     PowerOfTwoPolicy, RandomPolicy, RendezvousHashPolicy, RoundRobinPolicy,
 };
 use crate::config::PolicyConfig;
 use std::sync::Arc;
+use tracing::error;
 
 /// Factory for creating policy instances
 pub struct PolicyFactory;
@@ -39,12 +40,23 @@ impl PolicyFactory {
                 Arc::new(ConsistentHashPolicy::new())
             }
             PolicyConfig::RendezvousHash => Arc::new(RendezvousHashPolicy::new()),
+            PolicyConfig::External => match ExternalPolicy::from_globals_as_policy() {
+                Some(policy) => policy,
+                None => {
+                    error!(
+                        "External policy requested but no hooks installed, \
+                         falling back to round_robin"
+                    );
+                    Arc::new(RoundRobinPolicy::new())
+                }
+            },
         }
     }
 
     /// Create a policy by name (for dynamic loading)
     pub fn create_by_name(name: &str) -> Option<Arc<dyn LoadBalancingPolicy>> {
         match name.to_lowercase().as_str() {
+            "external" => ExternalPolicy::from_globals_as_policy(),
             "random" => Some(Arc::new(RandomPolicy::new())),
             "round_robin" | "roundrobin" => Some(Arc::new(RoundRobinPolicy::new())),
             "power_of_two" | "poweroftwo" => Some(Arc::new(PowerOfTwoPolicy::new())),

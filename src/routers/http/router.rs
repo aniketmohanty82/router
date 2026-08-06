@@ -564,14 +564,14 @@ impl Router {
                     }
                 };
 
-                // Optional load tracking for cache-aware policy
-                // Get the policy for this model to check if it's cache-aware
+                // Optional load tracking for policies that consume worker load:
+                // cache_aware balances on it, external forwards it to the scheduler
                 let policy = match model_id {
                     Some(model) => self.policy_registry.get_policy_or_default(model),
                     None => self.policy_registry.get_default_policy(),
                 };
 
-                let load_incremented = if policy.name() == "cache_aware" {
+                let load_incremented = if matches!(policy.name(), "cache_aware" | "external") {
                     worker.increment_load();
                     RouterMetrics::set_running_requests(worker.url(), worker.load());
                     true

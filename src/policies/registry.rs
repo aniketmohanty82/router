@@ -5,7 +5,7 @@
 /// All subsequent workers of the same model use the established policy.
 /// When the last worker of a model is removed, the policy mapping is cleaned up.
 use super::{
-    CacheAwareConfig, CacheAwarePolicy, ConsistentHashPolicy, LoadBalancingPolicy,
+    CacheAwareConfig, CacheAwarePolicy, ConsistentHashPolicy, ExternalPolicy, LoadBalancingPolicy,
     PowerOfTwoPolicy, RandomPolicy, RendezvousHashPolicy, RoundRobinPolicy,
 };
 use crate::config::types::PolicyConfig;
@@ -173,6 +173,13 @@ impl PolicyRegistry {
             "cache_aware" => Arc::new(CacheAwarePolicy::new()),
             "power_of_two" => Arc::new(PowerOfTwoPolicy::new()),
             "rendezvous_hash" => Arc::new(RendezvousHashPolicy::new()),
+            "external" => match ExternalPolicy::from_globals_as_policy() {
+                Some(policy) => policy,
+                None => {
+                    warn!("External policy requested but no hooks installed, using default");
+                    Arc::clone(&self.default_policy)
+                }
+            },
             _ => {
                 warn!("Unknown policy type '{}', using default", policy_type);
                 Arc::clone(&self.default_policy)
@@ -204,6 +211,16 @@ impl PolicyRegistry {
             PolicyConfig::PowerOfTwo { .. } => Arc::new(PowerOfTwoPolicy::new()),
             PolicyConfig::ConsistentHash { .. } => Arc::new(ConsistentHashPolicy::new()),
             PolicyConfig::RendezvousHash => Arc::new(RendezvousHashPolicy::new()),
+            PolicyConfig::External => match ExternalPolicy::from_globals_as_policy() {
+                Some(policy) => policy,
+                None => {
+                    warn!(
+                        "External policy requested but no hooks installed, \
+                         falling back to round_robin"
+                    );
+                    Arc::new(RoundRobinPolicy::new())
+                }
+            },
         }
     }
 

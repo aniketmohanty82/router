@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 mod cache_aware;
 mod consistent_hash;
+mod external;
 mod factory;
 mod hash_key;
 mod power_of_two;
@@ -21,6 +22,7 @@ mod round_robin;
 pub use cache_aware::CacheAwarePolicy;
 pub use consistent_hash::ConsistentHashPolicy;
 pub use consistent_hash::VIRTUAL_NODES_PER_WORKER;
+pub use external::{set_external_hooks, ExternalHooks, ExternalPolicy};
 pub use factory::PolicyFactory;
 pub use power_of_two::PowerOfTwoPolicy;
 pub use random::RandomPolicy;

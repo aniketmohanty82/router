@@ -246,6 +246,10 @@ pub enum PolicyConfig {
 
     #[serde(rename = "rendezvous_hash")]
     RendezvousHash,
+
+    /// Delegates selection to an externally installed hook (see policies::set_external_hooks)
+    #[serde(rename = "external")]
+    External,
 }
 
 impl PolicyConfig {
@@ -257,6 +261,7 @@ impl PolicyConfig {
             PolicyConfig::PowerOfTwo { .. } => "power_of_two",
             PolicyConfig::ConsistentHash { .. } => "consistent_hash",
             PolicyConfig::RendezvousHash => "rendezvous_hash",
+            PolicyConfig::External => "external",
         }
     }
 }

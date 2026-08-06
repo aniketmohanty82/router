@@ -191,6 +191,9 @@ impl ConfigValidator {
             PolicyConfig::RendezvousHash => {
                 // No specific validation needed
             }
+            PolicyConfig::External => {
+                // Hooks presence is checked at policy construction, not here
+            }
         }
         Ok(())
     }

@@ -2,6 +2,7 @@ use pyo3::prelude::*;
 pub mod config;
 pub mod logging;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub mod core;
 pub mod data_connector;
@@ -28,8 +29,9 @@ pub enum PolicyType {
     ConsistentHash,
 }
 
+// PartialEq dropped: Py<PyAny> (external policy callable) is not comparable
 #[pyclass]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 struct Router {
     host: String,
     port: u16,
@@ -97,9 +99,35 @@ struct Router {
     otlp_traces_endpoint: Option<String>,
     // KV connector for PD disaggregation ("nixl" or "mooncake")
     kv_connector: String,
+    // External policy: Python callable installed into the process-global
+    // hooks slot at start(); Arc because Py<PyAny> is not Clone
+    external_policy_callable: Option<Arc<Py<PyAny>>>,
+    external_fallback_policy: Option<PolicyType>,
 }
 
 impl Router {
+    /// Convert a PolicyType (plus its knobs held on self) to a config PolicyConfig
+    fn convert_policy_type(&self, policy: &PolicyType) -> config::PolicyConfig {
+        use config::PolicyConfig as ConfigPolicyConfig;
+        match policy {
+            PolicyType::Random => ConfigPolicyConfig::Random,
+            PolicyType::RoundRobin => ConfigPolicyConfig::RoundRobin,
+            PolicyType::CacheAware => ConfigPolicyConfig::CacheAware {
+                cache_threshold: self.cache_threshold,
+                balance_abs_threshold: self.balance_abs_threshold,
+                balance_rel_threshold: self.balance_rel_threshold,
+                eviction_interval_secs: self.eviction_interval_secs,
+                max_tree_size: self.max_tree_size,
+            },
+            PolicyType::PowerOfTwo => ConfigPolicyConfig::PowerOfTwo {
+                load_check_interval_secs: 5, // Default value
+            },
+            PolicyType::ConsistentHash => ConfigPolicyConfig::ConsistentHash {
+                virtual_nodes: 160, // Default value
+            },
+        }
+    }
+
     /// Convert PyO3 Router to RouterConfig
     pub fn to_router_config(&self) -> config::ConfigResult<config::RouterConfig> {
         use config::{
@@ -107,25 +135,8 @@ impl Router {
         };
 
         // Convert policy helper function
-        let convert_policy = |policy: &PolicyType| -> ConfigPolicyConfig {
-            match policy {
-                PolicyType::Random => ConfigPolicyConfig::Random,
-                PolicyType::RoundRobin => ConfigPolicyConfig::RoundRobin,
-                PolicyType::CacheAware => ConfigPolicyConfig::CacheAware {
-                    cache_threshold: self.cache_threshold,
-                    balance_abs_threshold: self.balance_abs_threshold,
-                    balance_rel_threshold: self.balance_rel_threshold,
-                    eviction_interval_secs: self.eviction_interval_secs,
-                    max_tree_size: self.max_tree_size,
-                },
-                PolicyType::PowerOfTwo => ConfigPolicyConfig::PowerOfTwo {
-                    load_check_interval_secs: 5, // Default value
-                },
-                PolicyType::ConsistentHash => ConfigPolicyConfig::ConsistentHash {
-                    virtual_nodes: 160, // Default value
-                },
-            }
-        };
+        let convert_policy =
+            |policy: &PolicyType| -> ConfigPolicyConfig { self.convert_policy_type(policy) };
 
         // Determine routing mode
         let mode = if self.enable_igw {
@@ -147,8 +158,12 @@ impl Router {
             }
         };
 
-        // Convert main policy
-        let policy = convert_policy(&self.policy);
+        // Convert main policy; an installed external callable overrides it
+        let policy = if self.external_policy_callable.is_some() {
+            ConfigPolicyConfig::External
+        } else {
+            convert_policy(&self.policy)
+        };
 
         // Service discovery configuration
         let discovery = if self.service_discovery {
@@ -310,6 +325,9 @@ impl Router {
         otlp_traces_endpoint = None,
         // KV connector default (PD disaggregation)
         kv_connector = String::from("nixl"),
+        // External policy hooks
+        external_policy_callable = None,
+        external_fallback_policy = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -372,6 +390,8 @@ impl Router {
         enable_trace: bool,
         otlp_traces_endpoint: Option<String>,
         kv_connector: String,
+        external_policy_callable: Option<Py<PyAny>>,
+        external_fallback_policy: Option<PolicyType>,
     ) -> PyResult<Self> {
         Ok(Router {
             host,
@@ -433,10 +453,12 @@ impl Router {
             enable_trace,
             otlp_traces_endpoint,
             kv_connector,
+            external_policy_callable: external_policy_callable.map(Arc::new),
+            external_fallback_policy,
         })
     }
 
-    fn start(&self) -> PyResult<()> {
+    fn start(&self, py: Python<'_>) -> PyResult<()> {
         // Convert to RouterConfig and validate
         let router_config = self.to_router_config().map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("Configuration error: {}", e))
@@ -449,6 +471,19 @@ impl Router {
                 e
             ))
         })?;
+
+        // Install the external hooks before any policy can be constructed
+        if let Some(callable) = &self.external_policy_callable {
+            let fallback = match &self.external_fallback_policy {
+                Some(policy_type) => self.convert_policy_type(policy_type),
+                None => config::PolicyConfig::RoundRobin,
+            };
+            let hooks = policies::ExternalHooks {
+                select: Arc::clone(callable),
+                fallback,
+            };
+            policies::set_external_hooks(hooks);
+        }
 
         // Create service discovery config if enabled
         let service_discovery_config = if self.service_discovery {
@@ -477,12 +512,15 @@ impl Router {
                 .unwrap_or_else(|| "127.0.0.1".to_string()),
         });
 
-        // Use tokio runtime instead of actix-web System for better compatibility
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        // Release the GIL before parking in block_on forever: the external
+        // policy and Python daemon threads need it while the server runs
+        py.detach(|| {
+            // Use tokio runtime instead of actix-web System for better compatibility
+            let runtime = tokio::runtime::Runtime::new()
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
-        // Block on the async startup function
-        runtime.block_on(async move {
+            // Block on the async startup function
+            runtime.block_on(async move {
             server::startup(server::ServerConfig {
                 host: self.host.clone(),
                 port: self.port,
@@ -505,6 +543,7 @@ impl Router {
             })
             .await
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+            })
         })
     }
 }
