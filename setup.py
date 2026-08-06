@@ -13,6 +13,8 @@ if not no_rust:
             target="vllm_router_rs",
             path="Cargo.toml",
             binding=Binding.PyO3,
+            # Wheels must not link libpython; off by default for cargo build/test
+            features=["extension-module"],
         )
     )
 
