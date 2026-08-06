@@ -25,6 +25,10 @@ class RouterArgs:
     policy: str = "cache_aware"
     prefill_policy: Optional[str] = None  # Specific policy for prefill nodes in PD mode
     decode_policy: Optional[str] = None  # Specific policy for decode nodes in PD mode
+    # External policy: MODULE:FUNCTION import path of a factory returning the
+    # selection callable; overrides --policy when set
+    external_policy_factory: Optional[str] = None
+    external_fallback_policy: Optional[str] = None
     worker_startup_timeout_secs: int = 600
     worker_startup_check_interval: int = 30
     cache_threshold: float = 0.3
@@ -168,6 +172,28 @@ class RouterArgs:
                 "consistent_hash",
             ],
             help="Specific policy for decode nodes in PD mode. If not specified, uses the main policy",
+        )
+        parser.add_argument(
+            f"--{prefix}external-policy-factory",
+            type=str,
+            default=None,
+            metavar="MODULE:FUNCTION",
+            help="Import path of a factory called as FACTORY(router_args) to obtain an "
+            "external selection callable; overrides --policy when set",
+        )
+        parser.add_argument(
+            f"--{prefix}external-fallback-policy",
+            type=str,
+            default=None,
+            choices=[
+                "random",
+                "round_robin",
+                "cache_aware",
+                "power_of_two",
+                "consistent_hash",
+            ],
+            help="Built-in policy used when the external callable declines or fails. "
+            "Requires --external-policy-factory. Default: round_robin",
         )
 
         # PD-specific arguments

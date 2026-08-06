@@ -1,8 +1,25 @@
-from typing import Optional
+import importlib
+from typing import Callable, Optional
 
 from vllm_router.router_args import RouterArgs
 from vllm_router_rs import PolicyType
 from vllm_router_rs import Router as _Router
+
+
+def load_external_policy_factory(spec: str) -> Callable:
+    """Resolve a MODULE:FUNCTION import path to the factory it names."""
+    module_name, sep, attr = spec.partition(":")
+    if not sep or not module_name or not attr:
+        raise ValueError(
+            f"--external-policy-factory expects MODULE:FUNCTION, got '{spec}'"
+        )
+    module = importlib.import_module(module_name)
+    try:
+        return getattr(module, attr)
+    except AttributeError as e:
+        raise ValueError(
+            f"module '{module_name}' has no attribute '{attr}'"
+        ) from e
 
 
 def policy_from_str(policy_str: Optional[str]) -> PolicyType:
@@ -129,6 +146,24 @@ class Router:
 
         # remove mini_lb parameter
         args_dict.pop("mini_lb")
+
+        # External policy: resolve the factory to the callable the Rust core invokes
+        factory_spec = args_dict.pop("external_policy_factory")
+        fallback = args_dict.pop("external_fallback_policy")
+        if factory_spec is not None:
+            factory = load_external_policy_factory(factory_spec)
+            select = factory(args)
+            if not callable(select):
+                raise TypeError(
+                    f"external policy factory '{factory_spec}' returned "
+                    f"{type(select).__name__}, expected a callable"
+                )
+            args_dict["external_policy_callable"] = select
+            args_dict["external_fallback_policy"] = policy_from_str(fallback)
+        elif fallback is not None:
+            raise ValueError(
+                "--external-fallback-policy requires --external-policy-factory"
+            )
 
         return Router(router=_Router(**args_dict))
 

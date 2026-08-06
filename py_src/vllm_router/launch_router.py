@@ -92,6 +92,12 @@ Examples:
     --decode http://decode1:8001 --decode http://decode2:8001 \\
     --prefill-policy cache_aware --decode-policy power_of_two
 
+  # External policy: routing decisions delegated to a Python callable built by
+  # MODULE:FUNCTION, called as FACTORY(router_args)
+  vllm-router --worker-urls http://worker1:8000 http://worker2:8000 \\
+    --external-policy-factory my_scheduler.factory:make_policy \\
+    --external-fallback-policy round_robin
+
     """,
         formatter_class=CustomHelpFormatter,
     )
